@@ -259,6 +259,7 @@
     const urlInput = document.getElementById("asstIframeUrl");
     const toolbarField = document.getElementById("asstToolbarField");
     const bpField = document.getElementById("asstBreakpointField");
+    const pageOutputField = document.getElementById("asstPageOutputField");
     const isStandalone = mode === "standalone";
     if (hint) {
       if (mode === "iframe") hint.textContent = "已自动生成菜单 URL，请复制后配置到宿主系统的 iframe 的 src 中使用，已帮您把 AppKey 参数带上，必传，不可删除。";
@@ -269,6 +270,7 @@
     if (urlInput && mode === "iframe") urlInput.value = buildIframeMenuUrl();
     if (toolbarField) toolbarField.hidden = isStandalone;
     if (bpField) bpField.hidden = !isStandalone;
+    if (pageOutputField) pageOutputField.hidden = isStandalone;
   }
 
   async function copyIframeMenuUrl() {
@@ -576,6 +578,13 @@
                   <p class="assistant-settings-hint is-warn">隐藏情况下，必须全屏才可以使用开启会话功能</p>
                 </div>
               </div>
+              <div class="settings-form-field span-2" id="asstPageOutputField">
+                <label>页面输出配置</label>
+                <div class="asst-header-actions" style="display:flex;flex-wrap:wrap;gap:12px 18px;padding-top:6px;font-size:13px;color:#344054;">
+                  <label style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;"><input type="checkbox" id="asstSqlBlockOutput" checked /> SQL块输出</label>
+                </div>
+                <p class="assistant-settings-hint">开启后问数结果页输出SQL块，此功能支持用户将结果一键添加到SQL示例库，变为推荐问题；默认打开，支持用户关闭</p>
+              </div>
               <div class="settings-form-field span-2" id="asstBreakpointField" hidden>
                 <label>流程控制断点输出</label>
                 <div class="asst-bp-timeline" role="group" aria-label="流程控制断点输出">
@@ -629,6 +638,227 @@
         </div>
       </section>
     `;
+  }
+
+  // ===== Skill 管理 =====
+  let skillStore = [];
+  let skillEditingId = null;
+  const SKILL_STORE_KEY = "glodon.skill-store.v1";
+  const SKILL_CONFIG_KEY = "glodon.skill-config.v1";
+
+  function getSkillSettingsPanelHtml() {
+    return `<section class="settings-panel" data-settings-panel="skill" id="skillSettingsPanel">
+            <div class="skill-config-bar">
+              <div class="skill-config-title">Skill 管理</div>
+              <div class="skill-config-fields">
+                <label class="skill-config-field">
+                  <span class="skill-config-label">API Base:</span>
+                  <input id="skillApiBase" type="text" class="skill-config-input" placeholder="http://localhost:8091" />
+                </label>
+                <label class="skill-config-field">
+                  <span class="skill-config-label">业务 ID:</span>
+                  <input id="skillBizId" type="text" class="skill-config-input" placeholder="1001" />
+                </label>
+                <label class="skill-config-field skill-config-field-token">
+                  <span class="skill-config-label">Token*:</span>
+                  <input id="skillToken" type="text" class="skill-config-input" placeholder="Bearer token（必填）" />
+                </label>
+              </div>
+            </div>
+            <div class="skill-hint-bar">
+              <span class="skill-hint-text">提示：点击左侧列表查看详情，可编辑或新建</span>
+              <div class="skill-hint-actions">
+                <button class="settings-btn" id="skillRefreshBtn" type="button">刷新列表</button>
+                <button class="settings-btn primary" id="skillCreateBtn" type="button">+ Skill</button>
+              </div>
+            </div>
+            <div class="skill-main">
+              <div class="skill-left">
+                <div class="skill-left-head">
+                  <span class="skill-left-title">Skill 列表</span>
+                  <input id="skillSearchInput" type="text" class="skill-search-input" placeholder="按名称查找..." />
+                  <button class="settings-btn" id="skillSearchBtn" type="button">查找</button>
+                  <span class="skill-total" id="skillTotalCount">共 0 条</span>
+                </div>
+                <div class="skill-list" id="skillList">
+                  <div class="skill-list-empty">暂无 Skill，点击「+ Skill」开始</div>
+                </div>
+              </div>
+              <div class="skill-right" id="skillRight">
+                <div class="skill-right-head">
+                  <span class="skill-right-title" id="skillFormTitle">新建 Skill</span>
+                  <button class="settings-btn" id="skillCancelEditBtn" type="button" hidden>取消</button>
+                </div>
+                <form class="skill-form" id="skillForm" autocomplete="off">
+                  <div class="skill-form-item">
+                    <label class="skill-form-label">名称<span class="skill-required">*</span></label>
+                    <input id="skillNameInput" type="text" class="skill-form-input" placeholder="例如：dataset-query" />
+                  </div>
+                  <div class="skill-form-item">
+                    <label class="skill-form-label">描述<span class="skill-required">*</span></label>
+                    <input id="skillDescInput" type="text" class="skill-form-input" placeholder="一句话说明 Skill 用途" />
+                  </div>
+                  <div class="skill-form-item">
+                    <label class="skill-form-label">内容<span class="skill-required">*</span></label>
+                    <textarea id="skillContentInput" class="skill-form-textarea" placeholder="Skill 完整内容..."></textarea>
+                  </div>
+                  <div class="skill-form-actions">
+                    <button class="settings-btn" id="skillFormCancelBtn" type="button">取消</button>
+                    <button class="settings-btn primary" id="skillFormSubmitBtn" type="submit">创建</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </section>`;
+  }
+
+  function ensureSkillStore() {
+    try { const raw = localStorage.getItem(SKILL_STORE_KEY); skillStore = raw ? JSON.parse(raw) : []; } catch { skillStore = []; }
+  }
+  function saveSkillStore() { localStorage.setItem(SKILL_STORE_KEY, JSON.stringify(skillStore)); }
+  function ensureSkillConfig() {
+    try {
+      const raw = localStorage.getItem(SKILL_CONFIG_KEY);
+      const cfg = raw ? JSON.parse(raw) : {};
+      document.getElementById("skillApiBase").value = cfg.apiBase || "";
+      document.getElementById("skillBizId").value = cfg.bizId || "";
+      document.getElementById("skillToken").value = cfg.token || "";
+    } catch {}
+  }
+  function saveSkillConfig() {
+    const cfg = {
+      apiBase: document.getElementById("skillApiBase").value.trim(),
+      bizId: document.getElementById("skillBizId").value.trim(),
+      token: document.getElementById("skillToken").value.trim(),
+    };
+    localStorage.setItem(SKILL_CONFIG_KEY, JSON.stringify(cfg));
+  }
+
+  function renderSkillList() {
+    ensureSkillStore();
+    const listEl = document.getElementById("skillList");
+    const totalEl = document.getElementById("skillTotalCount");
+    const searchEl = document.getElementById("skillSearchInput");
+    const q = (searchEl?.value || "").trim().toLowerCase();
+    let items = skillStore;
+    if (q) items = items.filter((s) => (s.name || "").toLowerCase().includes(q));
+    if (totalEl) totalEl.textContent = `共 ${items.length} 条`;
+    if (!items.length) {
+      listEl.innerHTML = `<div class="skill-list-empty">${skillStore.length ? "没有匹配的 Skill" : "暂无 Skill，点击「+ Skill」开始"}</div>`;
+      return;
+    }
+    listEl.innerHTML = items.map((s) => {
+      const active = s.id === skillEditingId ? " is-active" : "";
+      return `<div class="skill-list-item${active}" data-skill-id="${s.id}">
+        <div class="skill-list-item-name">${escapeSkillHtml(s.name || "(未命名)")}</div>
+        <div class="skill-list-item-desc">${escapeSkillHtml(s.desc || "")}</div>
+      </div>`;
+    }).join("");
+  }
+  function escapeSkillHtml(str) {
+    return String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function openSkillCreate() {
+    skillEditingId = null;
+    document.getElementById("skillFormTitle").textContent = "新建 Skill";
+    document.getElementById("skillNameInput").value = "";
+    document.getElementById("skillDescInput").value = "";
+    document.getElementById("skillContentInput").value = "";
+    document.getElementById("skillFormSubmitBtn").textContent = "创建";
+    document.getElementById("skillCancelEditBtn").hidden = true;
+    renderSkillList();
+  }
+  function openSkillEdit(id) {
+    ensureSkillStore();
+    const item = skillStore.find((s) => s.id === id);
+    if (!item) return;
+    skillEditingId = id;
+    document.getElementById("skillFormTitle").textContent = "编辑 Skill";
+    document.getElementById("skillNameInput").value = item.name || "";
+    document.getElementById("skillDescInput").value = item.desc || "";
+    document.getElementById("skillContentInput").value = item.content || "";
+    document.getElementById("skillFormSubmitBtn").textContent = "保存";
+    document.getElementById("skillCancelEditBtn").hidden = false;
+    renderSkillList();
+  }
+  function handleSkillFormSubmit(e) {
+    e.preventDefault();
+    ensureSkillStore();
+    const name = document.getElementById("skillNameInput").value.trim();
+    const desc = document.getElementById("skillDescInput").value.trim();
+    const content = document.getElementById("skillContentInput").value.trim();
+    if (!name) { alert("请填写名称"); return; }
+    if (!desc) { alert("请填写描述"); return; }
+    if (!content) { alert("请填写内容"); return; }
+    const now = new Date().toISOString().slice(0, 16).replace("T", " ");
+    if (skillEditingId) {
+      const idx = skillStore.findIndex((s) => s.id === skillEditingId);
+      if (idx >= 0) skillStore[idx] = { ...skillStore[idx], name, desc, content, updatedAt: now };
+    } else {
+      const id = "sk_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+      skillStore.push({ id, name, desc, content, createdAt: now, updatedAt: now });
+    }
+    saveSkillStore();
+    openSkillCreate();
+  }
+
+  function ensureSkillSettingsPanel() {
+    const overlay = document.getElementById("settingsModalOverlay");
+    if (!overlay) return;
+    const nav = overlay.querySelector(".settings-nav");
+    const content = overlay.querySelector(".settings-content");
+    if (!nav || !content) return;
+
+    // Nav 按钮：插入到 prompt 后面（自定义提示词下面）
+    if (!nav.querySelector('[data-settings-panel="skill"]')) {
+      const btn = document.createElement("button");
+      btn.className = "settings-nav-item";
+      btn.type = "button";
+      btn.dataset.settingsPanel = "skill";
+      btn.textContent = "自定义流程";
+      const promptBtn = nav.querySelector('[data-settings-panel="prompt"]');
+      if (promptBtn) promptBtn.insertAdjacentElement("afterend", btn);
+      else nav.appendChild(btn);
+    }
+
+    // Panel：插入到 prompt panel 后面
+    if (!document.getElementById("skillSettingsPanel")) {
+      const promptPanel = content.querySelector('[data-settings-panel="prompt"]');
+      if (promptPanel) promptPanel.insertAdjacentHTML("afterend", getSkillSettingsPanelHtml());
+      else content.insertAdjacentHTML("beforeend", getSkillSettingsPanelHtml());
+    }
+    ensureSkillStore();
+  }
+
+  function bindSkillSettingsEvents() {
+    ensureSkillStore();
+    ensureSkillConfig();
+    const panel = document.getElementById("skillSettingsPanel");
+    if (!panel || panel.dataset.bound === "1") { renderSkillList(); return; }
+    panel.dataset.bound = "1";
+
+    panel.addEventListener("input", (e) => {
+      if (e.target.id === "skillApiBase" || e.target.id === "skillBizId" || e.target.id === "skillToken") saveSkillConfig();
+    });
+    panel.addEventListener("click", (e) => {
+      const listItem = e.target.closest(".skill-list-item");
+      if (listItem) { openSkillEdit(listItem.dataset.skillId); return; }
+      if (e.target.closest("#skillCreateBtn")) { openSkillCreate(); return; }
+      if (e.target.closest("#skillCancelEditBtn")) { openSkillCreate(); return; }
+      if (e.target.closest("#skillFormCancelBtn")) { openSkillCreate(); return; }
+      if (e.target.closest("#skillSearchBtn") || e.target.closest("#skillRefreshBtn")) { renderSkillList(); return; }
+    });
+    panel.addEventListener("submit", (e) => {
+      if (e.target.id === "skillForm") handleSkillFormSubmit(e);
+    });
+
+    document.getElementById("skillSearchInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") renderSkillList();
+    });
+    document.getElementById("skillSearchInput").addEventListener("input", () => renderSkillList());
+
+    renderSkillList();
+    openSkillCreate();
   }
 
   function ensureAssistantSettingsPanel() {
@@ -735,6 +965,10 @@
     return raw !== false;
   }
 
+  function normalizeSqlBlockOutput(raw) {
+    return raw !== false;
+  }
+
   function fillAssistantForm(data) {
     const setVal = (id, value) => {
       const el = document.getElementById(id);
@@ -761,6 +995,7 @@
     const hideEl = document.getElementById("asstToolbarHide");
     if (showEl) showEl.checked = toolbarVisible;
     if (hideEl) hideEl.checked = !toolbarVisible;
+    setChecked("asstSqlBlockOutput", normalizeSqlBlockOutput(data?.sqlBlockOutput));
     const headerActions = normalizeAssistantHeaderActions(data?.headerActions);
     setChecked("asstHeaderExpand", headerActions.expand);
     setChecked("asstHeaderTheme", headerActions.theme);
@@ -806,6 +1041,7 @@
       theme: document.getElementById("asstTheme")?.value || "light",
       toolbarVisible: isToolbarVisibleChecked(),
       defaultFullscreen: !isToolbarVisibleChecked(),
+      sqlBlockOutput: !!document.getElementById("asstSqlBlockOutput")?.checked,
       headerActions: {
         expand: !!document.getElementById("asstHeaderExpand")?.checked,
         theme: !!document.getElementById("asstHeaderTheme")?.checked,
@@ -832,6 +1068,7 @@
       theme: "light",
       toolbarVisible: true,
       defaultFullscreen: false,
+      sqlBlockOutput: true,
       headerActions: { expand: false, theme: false, settings: false, newChat: true },
       processBreakpoints: { validate: true, execute: true, render: true, semantic: true },
       appKey: "",
@@ -1155,9 +1392,11 @@
   function init(options) {
     deps = options || {};
     mount(deps.root);
+    ensureSkillSettingsPanel();
     ensureAssistantSettingsPanel();
     cacheEls();
     if (initialized) {
+      bindSkillSettingsEvents();
       bindAssistantSettingsEvents();
       return api;
     }
@@ -1857,6 +2096,7 @@
     seedSettingsData();
     renderSettingsTables();
     renderRecommendStrip();
+    bindSkillSettingsEvents();
     bindAssistantSettingsEvents();
 
     closeSettingsModalEl.addEventListener("click", closeSettingsModal);
